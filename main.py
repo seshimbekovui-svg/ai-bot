@@ -3,26 +3,26 @@ import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List
-import google.generativeai as genai
+from openai import AsyncOpenAI
 
 app = FastAPI()
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
-    system_instruction="""Ты — AI-помощник Банка Компаньон.
-Отвечай кратко и по делу на вопросы клиентов о банковских продуктах и услугах.
-Если вопрос требует участия оператора — скажи об этом.
-Отвечай на том языке, на котором пишет клиент (русский или кыргызский)."""
-)
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 EDNA_CALLBACK_URL = os.getenv("EDNA_CALLBACK_URL", "https://kompanion.edna.kz/api/v1/chatbot")
 EDNA_AUTH_TOKEN = os.getenv("EDNA_AUTH_TOKEN")
+
+SYSTEM_PROMPT = """Ты — AI-помощник Банка Компаньон.
+Отвечай кратко и по делу на вопросы клиентов о банковских продуктах и услугах.
+Если вопрос требует участия оператора — скажи об этом.
+Отвечай на том языке, на котором пишет клиент (русский или кыргызский)."""
+
 
 class ChannelInfo(BaseModel):
     id: int
     channelType: str
     authorized: bool
+
 
 class EdnaMessage(BaseModel):
     action: str
@@ -37,6 +37,7 @@ class EdnaMessage(BaseModel):
     attachments: Optional[List] = []
     clientData: Optional[dict] = None
     sender: Optional[str] = None
+
 
 async def send_to_edna(session_id: str, question_index: int, channel_type: str, text: str):
     payload = {
@@ -63,30 +64,47 @@ async def send_to_edna(session_id: str, question_index: int, channel_type: str, 
         print(f"edna response: {response.status_code} — {response.text}")
         return response
 
+
 async def get_ai_response(user_text: str, client_name: Optional[str] = None) -> str:
-    prompt = user_text
+    system = SYSTEM_PROMPT
     if client_name:
-        prompt = f"Клиент: {client_name}\nВопрос: {user_text}"
-    response = model.generate_content(prompt)
-    return response.text
+        system += f"\nИмя клиента: {client_name}"
+
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_text}
+        ],
+        max_tokens=500,
+        temperature=0.7
+    )
+    return response.choices[0].message.content
+
 
 @app.post("/webhook")
 async def webhook(message: EdnaMessage):
     print(f"Входящее: action={message.action}, text={message.text}, channel={message.channelInfo.channelType}")
+
     if message.action != "MESSAGE" or not message.text:
         return {"status": "ignored"}
+
     try:
         client_name = None
         if message.clientData:
             client_name = message.clientData.get("name")
+
         ai_text = await get_ai_response(message.text, client_name)
+
         await send_to_edna(
             session_id=message.sessionId,
             question_index=message.questionIndex,
             channel_type=message.channelInfo.channelType,
             text=ai_text
         )
+
         return {"status": "ok"}
+
     except Exception as e:
         print(f"Ошибка: {e}")
         await send_to_edna(
@@ -96,6 +114,7 @@ async def webhook(message: EdnaMessage):
             text="Извините, произошла ошибка. Попробуйте позже или обратитесь к оператору."
         )
         return {"status": "error", "detail": str(e)}
+
 
 @app.get("/health")
 async def health():
