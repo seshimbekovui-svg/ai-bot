@@ -7,7 +7,10 @@ from openai import AsyncOpenAI
 
 app = FastAPI()
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(
+    api_key=os.getenv("GROQ_API_KEY"),
+    base_url="https://api.groq.com/openai/v1"
+)
 
 EDNA_CALLBACK_URL = os.getenv("EDNA_CALLBACK_URL", "https://kompanion.edna.kz/api/v1/chatbot")
 EDNA_AUTH_TOKEN = os.getenv("EDNA_AUTH_TOKEN")
@@ -71,7 +74,7 @@ async def get_ai_response(user_text: str, client_name: Optional[str] = None) -> 
         system += f"\nИмя клиента: {client_name}"
 
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_text}
