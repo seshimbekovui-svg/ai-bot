@@ -9,7 +9,7 @@ app = FastAPI()
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="gemini-2.0-flash",,
     system_instruction="""Ты — AI-помощник Банка Компаньон.
 Отвечай кратко и по делу на вопросы клиентов о банковских продуктах и услугах.
 Если вопрос требует участия оператора — скажи об этом.
