@@ -1,31 +1,28 @@
 import os
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List
-from openai import AsyncOpenAI
+import google.generativeai as genai
 
 app = FastAPI()
 
-# Клиент OpenAI
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Настройки edna
-EDNA_CALLBACK_URL = os.getenv("EDNA_CALLBACK_URL", "https://kompanion.edna.kz/api/v1/chatbot")
-EDNA_AUTH_TOKEN = os.getenv("EDNA_AUTH_TOKEN")
-
-# Системный промпт — настрой под себя
-SYSTEM_PROMPT = """Ты — AI-помощник Банка Компаньон. 
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction="""Ты — AI-помощник Банка Компаньон.
 Отвечай кратко и по делу на вопросы клиентов о банковских продуктах и услугах.
 Если вопрос требует участия оператора — скажи об этом.
 Отвечай на том языке, на котором пишет клиент (русский или кыргызский)."""
+)
 
+EDNA_CALLBACK_URL = os.getenv("EDNA_CALLBACK_URL", "https://kompanion.edna.kz/api/v1/chatbot")
+EDNA_AUTH_TOKEN = os.getenv("EDNA_AUTH_TOKEN")
 
 class ChannelInfo(BaseModel):
     id: int
     channelType: str
     authorized: bool
-
 
 class EdnaMessage(BaseModel):
     action: str
@@ -41,9 +38,7 @@ class EdnaMessage(BaseModel):
     clientData: Optional[dict] = None
     sender: Optional[str] = None
 
-
 async def send_to_edna(session_id: str, question_index: int, channel_type: str, text: str):
-    """Отправляет ответ обратно в edna"""
     payload = {
         "action": "MESSAGE",
         "sessionId": session_id,
@@ -55,7 +50,6 @@ async def send_to_edna(session_id: str, question_index: int, channel_type: str, 
         "channelType": channel_type,
         "quickReplies": []
     }
-
     async with httpx.AsyncClient(verify=False) as client:
         response = await client.post(
             EDNA_CALLBACK_URL,
@@ -69,59 +63,32 @@ async def send_to_edna(session_id: str, question_index: int, channel_type: str, 
         print(f"edna response: {response.status_code} — {response.text}")
         return response
 
-
 async def get_ai_response(user_text: str, client_name: Optional[str] = None) -> str:
-    """Получает ответ от ChatGPT"""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT}
-    ]
-
+    prompt = user_text
     if client_name:
-        messages[0]["content"] += f"\nИмя клиента: {client_name}"
-
-    messages.append({"role": "user", "content": user_text})
-
-    response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        max_tokens=500,
-        temperature=0.7
-    )
-
-    return response.choices[0].message.content
-
+        prompt = f"Клиент: {client_name}\nВопрос: {user_text}"
+    response = model.generate_content(prompt)
+    return response.text
 
 @app.post("/webhook")
 async def webhook(message: EdnaMessage):
-    """Принимает сообщения от edna"""
-    print(f"Входящее от edna: action={message.action}, text={message.text}, channel={message.channelInfo.channelType}")
-
-    # Обрабатываем только текстовые сообщения
+    print(f"Входящее: action={message.action}, text={message.text}, channel={message.channelInfo.channelType}")
     if message.action != "MESSAGE" or not message.text:
         return {"status": "ignored"}
-
     try:
-        # Получаем имя клиента если есть
         client_name = None
         if message.clientData:
             client_name = message.clientData.get("name")
-
-        # Отправляем в ChatGPT
         ai_text = await get_ai_response(message.text, client_name)
-
-        # Отправляем ответ обратно в edna
         await send_to_edna(
             session_id=message.sessionId,
             question_index=message.questionIndex,
             channel_type=message.channelInfo.channelType,
             text=ai_text
         )
-
         return {"status": "ok"}
-
     except Exception as e:
         print(f"Ошибка: {e}")
-        # В случае ошибки — отправляем дефолтное сообщение
         await send_to_edna(
             session_id=message.sessionId,
             question_index=message.questionIndex,
@@ -129,7 +96,6 @@ async def webhook(message: EdnaMessage):
             text="Извините, произошла ошибка. Попробуйте позже или обратитесь к оператору."
         )
         return {"status": "error", "detail": str(e)}
-
 
 @app.get("/health")
 async def health():
