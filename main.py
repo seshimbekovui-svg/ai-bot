@@ -42,20 +42,18 @@ class EdnaMessage(BaseModel):
     sender: Optional[str] = None
 
 
-async def send_to_edna(session_id: str, question_index: int, channel_type: str, text: str):
+async def send_to_edna(session_id: str, question_index: int, received_at: str, text: str):
     payload = {
         "action": "MESSAGE",
         "sessionId": session_id,
-        "questionIndex": question_index + 1,
-        "receivedAt": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "questionIndex": question_index,
+        "receivedAt": received_at,
         "text": text,
-        "formattedText": None,
-        "code": "SUCCESS",
-        "channelType": channel_type,
-        "quickReplies": []
+        "code": "SUCCESS"
     }
-    async with httpx.AsyncClient(verify=False) as client:
-        response = await client.post(
+    print(f"Отправляем в edna: {payload}")
+    async with httpx.AsyncClient(verify=False) as http_client:
+        response = await http_client.post(
             EDNA_CALLBACK_URL,
             json=payload,
             headers={
@@ -102,7 +100,7 @@ async def webhook(message: EdnaMessage):
         await send_to_edna(
             session_id=message.sessionId,
             question_index=message.questionIndex,
-            channel_type=message.channelInfo.channelType,
+            received_at=message.receivedAt,
             text=ai_text
         )
 
@@ -113,7 +111,7 @@ async def webhook(message: EdnaMessage):
         await send_to_edna(
             session_id=message.sessionId,
             question_index=message.questionIndex,
-            channel_type=message.channelInfo.channelType,
+            received_at=message.receivedAt,
             text="Извините, произошла ошибка. Попробуйте позже или обратитесь к оператору."
         )
         return {"status": "error", "detail": str(e)}
