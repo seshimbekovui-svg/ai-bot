@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List
 from openai import AsyncOpenAI
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
@@ -19,15 +20,48 @@ SYSTEM_PROMPT = """Ты — AI-помощник Банка Компаньон п
 
 ВАЖНЫЕ ПРАВИЛА:
 - НЕ здоровайся и НЕ приветствуй клиента — сразу отвечай по делу
-- Отвечай на вопросы развёрнуто и полезно на основе информации Банка Компаньон
-- Информация о банке: https://www.kompanion.kg/
-- Банк Компаньон предлагает: кредиты, депозиты, карты, переводы, мобильный банкинг
-- Если точной информации нет — направь клиента на сайт kompanion.kg или к оператору 👨‍💼
-- Отвечай КОРОТКО — максимум 3-4 предложения
+- Отвечай на вопросы используя ТОЛЬКО предоставленную информацию с сайта банка
+- Отвечай КОРОТКО и ПОЛЕЗНО — максимум 4-5 предложений
 - НЕ задавай вопросы клиенту
 - Используй эмоджи 😊
 - Отвечай ТОЛЬКО на русском или кыргызском — в зависимости от языка клиента
+- Если информации нет — направь на сайт kompanion.kg или к оператору 👨‍💼
 - Представляйся как Нурай только если клиент спрашивает кто ты"""
+
+
+async def fetch_site_content(query: str) -> str:
+    urls = ["https://www.kompanion.kg/"]
+
+    query_lower = query.lower()
+    if any(w in query_lower for w in ["кредит", "займ", "кредиттер", "насыя"]):
+        urls = ["https://www.kompanion.kg/credits/", "https://www.kompanion.kg/"]
+    elif any(w in query_lower for w in ["депозит", "вклад", "депозиттер"]):
+        urls = ["https://www.kompanion.kg/deposits/", "https://www.kompanion.kg/"]
+    elif any(w in query_lower for w in ["карт", "карта"]):
+        urls = ["https://www.kompanion.kg/cards/", "https://www.kompanion.kg/"]
+    elif any(w in query_lower for w in ["перевод", "которуу"]):
+        urls = ["https://www.kompanion.kg/transfers/", "https://www.kompanion.kg/"]
+    elif any(w in query_lower for w in ["мобильн", "приложен", "тиркеме"]):
+        urls = ["https://www.kompanion.kg/mobile-bank/", "https://www.kompanion.kg/"]
+
+    content = ""
+    async with httpx.AsyncClient(verify=False, timeout=10.0) as http_client:
+        for url in urls[:2]:
+            try:
+                response = await http_client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                })
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    for tag in soup(["script", "style", "nav", "footer", "header"]):
+                        tag.decompose()
+                    text = soup.get_text(separator=" ", strip=True)
+                    content += f"\n[{url}]:\n{text[:3000]}\n"
+            except Exception as e:
+                print(f"Ошибка загрузки {url}: {e}")
+
+    return content if content else "Информация с сайта недоступна."
+
 
 class ChannelInfo(BaseModel):
     id: int
@@ -75,9 +109,12 @@ async def send_to_edna(session_id: str, question_index: int, received_at: str, t
 
 
 async def get_ai_response(user_text: str, client_name: Optional[str] = None) -> str:
+    site_content = await fetch_site_content(user_text)
+
     system = SYSTEM_PROMPT
     if client_name:
         system += f"\nИмя клиента: {client_name}"
+    system += f"\n\nИнформация с сайта Банка Компаньон:\n{site_content}"
 
     response = await client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -120,7 +157,7 @@ async def webhook(message: EdnaMessage):
             session_id=message.sessionId,
             question_index=message.questionIndex,
             received_at=message.receivedAt,
-            text="Извините, произошла ошибка. Попробуйте позже или обратитесь к оператору."
+            text="Извините, произошла ошибка. Попробуйте позже или обратитесь к оператору 👨‍💼"
         )
         return {"status": "error", "detail": str(e)}
 
